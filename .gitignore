@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# dotenv
+.env
+
+# Cache and data
+*.sqlite3
+*.db
+*.log
+*.csv
+*.json
+spotify_artist_genre_cache.json
+liked_genres.csv
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# OAuth cache
+.spotipyoauthcache
