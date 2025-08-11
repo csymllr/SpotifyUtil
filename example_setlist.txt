@@ -1,0 +1,25 @@
+# Concert Setlist
+# Format: Artist Name: Song Title (one per line)
+# Lines starting with # are comments
+
+Green Day: Basket Case
+Green Day: When I Come Around
+Green Day: Longview
+Green Day: Welcome to Paradise
+Green Day: She
+Green Day: Emenius Sleepus
+Green Day: In the End
+Green Day: F.O.D.
+
+The Offspring: Come Out and Play
+The Offspring: Self Esteem
+The Offspring: Gotta Get Away
+The Offspring: Genocide
+The Offspring: Something to Believe In
+The Offspring: Intermission
+
+Bad Religion: Generator
+Bad Religion: Suffer
+Bad Religion: You
+Bad Religion: Punk Rock Song
+Bad Religion: Recipe for Hate

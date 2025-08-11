@@ -5,6 +5,7 @@ This project automatically organizes your Spotify tracks or playlists into genre
 ## Features
 - Assigns genres to tracks using all artists, related artists, and MusicBrainz tags
 - Creates or updates genre playlists in your Spotify account
+- **NEW**: Creates concert playlists from actual setlists
 - Exports genre assignments to CSV
 - Caches artist genre lookups for speed
 - Command-line flags for customization
@@ -28,14 +29,37 @@ This project automatically organizes your Spotify tracks or playlists into genre
      ```
 3. Run the script:
    ```sh
+   # For liked songs
    python spotify_genre_playlister.py --liked
-   ```
-   Or for a playlist:
-   ```sh
+   
+   # For existing playlist
    python spotify_genre_playlister.py --playlist <playlist_id_or_url>
+   
+   # For concert playlist from setlist file
+   python spotify_genre_playlister.py --setlist-file setlist.txt --concert-playlist "My Concert 2025"
+   
+   # Validate setlist first (recommended)
+   python spotify_genre_playlister.py --setlist-file setlist.txt --validate-only
    ```
 
+## Setlist Format
+Create a text file (e.g., `setlist.txt`) with your songs:
+```
+# Concert Setlist
+Green Day: Basket Case
+Green Day: When I Come Around
+The Offspring: Come Out and Play
+The Offspring: Self Esteem
+Bad Religion: Generator
+```
+- Use `Artist Name: Song Title` format (one per line)
+- Lines starting with `#` are comments
+- Script will search Spotify for each song and add to playlist
+
 ## Flags
+- `--setlist-file` Text file with concert setlist (Artist: Song format)
+- `--concert-playlist` Name for the concert playlist to create
+- `--validate-only` Validate songs against Spotify without creating playlist
 - `--use-all-artists` Use all track artists for genre assignment
 - `--infer-related` Infer genres from related artists
 - `--use-musicbrainz` Use MusicBrainz tags as fallback

@@ -24,6 +24,7 @@ import time
 import csv
 import re
 import json
+import logging
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict, Counter
 
@@ -32,6 +33,9 @@ from dotenv import load_dotenv
 
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
+
+# Suppress spotipy's HTTP error logging for cleaner output
+logging.getLogger('spotipy').setLevel(logging.WARNING)
 
 load_dotenv()
 
@@ -117,7 +121,12 @@ def get_artist_genres_by_id(sp: spotipy.Spotify, artist_id: str) -> List[str]:
     try:
         a = sp.artist(artist_id)
         return [normalize_genre(g) for g in a.get("genres", [])]
-    except Exception:
+    except Exception as e:
+        # Log the error for summary but don't print immediately
+        if hasattr(get_artist_genres_by_id, '_errors'):
+            get_artist_genres_by_id._errors.append(f"Artist ID {artist_id}: {str(e)}")
+        else:
+            get_artist_genres_by_id._errors = [f"Artist ID {artist_id}: {str(e)}"]
         return []
 
 def search_artist_genres_by_name(sp: spotipy.Spotify, name: str) -> List[str]:
@@ -125,9 +134,18 @@ def search_artist_genres_by_name(sp: spotipy.Spotify, name: str) -> List[str]:
         res = sp.search(q=f"artist:{name}", type="artist", limit=1)
         items = res.get("artists", {}).get("items", [])
         if not items:
+            # Log for summary
+            if hasattr(search_artist_genres_by_name, '_errors'):
+                search_artist_genres_by_name._errors.append(f"Artist name not found: {name}")
+            else:
+                search_artist_genres_by_name._errors = [f"Artist name not found: {name}"]
             return []
         return [normalize_genre(g) for g in items[0].get("genres", [])]
-    except Exception:
+    except Exception as e:
+        if hasattr(search_artist_genres_by_name, '_errors'):
+            search_artist_genres_by_name._errors.append(f"Artist name search {name}: {str(e)}")
+        else:
+            search_artist_genres_by_name._errors = [f"Artist name search {name}: {str(e)}"]
         return []
 
 def infer_from_related(sp: spotipy.Spotify, artist_id: str) -> List[str]:
@@ -139,7 +157,12 @@ def infer_from_related(sp: spotipy.Spotify, artist_id: str) -> List[str]:
         genres = [normalize_genre(g) for g in genres]
         common = [g for g, _ in Counter(genres).most_common(3)]
         return common
-    except Exception:
+    except Exception as e:
+        # Log for summary
+        if hasattr(infer_from_related, '_errors'):
+            infer_from_related._errors.append(f"Related artists for {artist_id}: {str(e)}")
+        else:
+            infer_from_related._errors = [f"Related artists for {artist_id}: {str(e)}"]
         return []
 
 MB_HEADERS = {"User-Agent": "GenreFiller/2.0 ( https://example.com )"}
@@ -193,6 +216,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--liked", action="store_true", help="Use your Liked Songs as the source")
     ap.add_argument("--playlist", help="Playlist URL/URI/ID to process instead of Liked Songs")
+    ap.add_argument("--setlist-file", help="Text file with setlist for concert playlist (format: 'Artist Name: Song Title' per line)")
+    ap.add_argument("--concert-playlist", help="Name for the concert playlist to create")
+    ap.add_argument("--validate-only", action="store_true", help="Only validate songs against Spotify, don't create playlist")
     ap.add_argument("--max", type=int, default=0, help="Process at most N tracks (0 = all)")
     ap.add_argument("--prefix", default="Genres – ", help="Playlist name prefix for created/updated genre playlists")
     ap.add_argument("--owner", default="", help="Optional user ID to own the new playlists (defaults to your account)")
@@ -206,6 +232,15 @@ def main():
     ap.add_argument("--use-musicbrainz", action="store_true", help="If still empty, query MusicBrainz tags")
     ap.add_argument("--mb-delay", type=float, default=1.1, help="Delay between MusicBrainz requests (seconds)")
     args = ap.parse_args()
+
+    def chunked(seq, size):
+        for i in range(0, len(seq), size):
+            yield seq[i:i+size]
+
+    # Initialize error tracking
+    get_artist_genres_by_id._errors = []
+    search_artist_genres_by_name._errors = []
+    infer_from_related._errors = []
 
     client_id = os.environ.get("SPOTIPY_CLIENT_ID")
     client_secret = os.environ.get("SPOTIPY_CLIENT_SECRET")
@@ -262,6 +297,60 @@ def main():
             return s.split("playlist/")[-1].split("?")[0]
         return s
 
+    def parse_setlist_file(file_path: str) -> List[Tuple[str, str]]:
+        """Parse setlist file. Format: 'Artist Name: Song Title' per line"""
+        setlist = []
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    if ': ' in line:
+                        artist, song = line.split(': ', 1)
+                        setlist.append((artist.strip(), song.strip()))
+                    else:
+                        print(f"WARNING: Line {line_num} doesn't match format 'Artist: Song' - skipping: {line}")
+        except FileNotFoundError:
+            print(f"ERROR: Setlist file not found: {file_path}", file=sys.stderr)
+            sys.exit(2)
+        except Exception as e:
+            print(f"ERROR: Failed to read setlist file: {e}", file=sys.stderr)
+            sys.exit(2)
+        return setlist
+
+    def search_track(sp: spotipy.Spotify, artist: str, song: str) -> Tuple[Optional[dict], str]:
+        """Search for a specific track by artist and song name. Returns (track, status)"""
+        try:
+            # Try exact search first
+            query = f'artist:"{artist}" track:"{song}"'
+            results = sp.search(q=query, type='track', limit=1)
+            tracks = results.get('tracks', {}).get('items', [])
+            
+            if tracks:
+                return tracks[0], "exact_match"
+            
+            # Try broader search without quotes
+            query = f'artist:{artist} track:{song}'
+            results = sp.search(q=query, type='track', limit=5)
+            tracks = results.get('tracks', {}).get('items', [])
+            
+            # Look for best match
+            for track in tracks:
+                track_artists = [a['name'].lower() for a in track.get('artists', [])]
+                if any(artist.lower() in ta for ta in track_artists):
+                    return track, "fuzzy_match"
+            
+            # If no artist match, return first result as potential match
+            if tracks:
+                return tracks[0], "potential_match"
+            
+            return None, "not_found"
+            
+        except Exception as e:
+            return None, f"error: {e}"
+
     tracks = []
     if args.liked:
         print("Fetching Liked Songs...")
@@ -279,8 +368,104 @@ def main():
             if not tr or not tr.get("id"):
                 continue
             tracks.append(tr)
+    elif args.setlist_file:
+        if not args.validate_only and not args.concert_playlist:
+            print("ERROR: --concert-playlist name required when using --setlist-file (unless using --validate-only)", file=sys.stderr)
+            sys.exit(2)
+        
+        print(f"Reading setlist from: {args.setlist_file}")
+        setlist = parse_setlist_file(args.setlist_file)
+        
+        print(f"Validating {len(setlist)} songs against Spotify...")
+        print("=" * 80)
+        
+        found_tracks = []
+        validation_results = []
+        
+        for i, (artist, song) in enumerate(setlist, 1):
+            print(f"[{i:2d}/{len(setlist)}] Searching: {artist} - {song}")
+            track, status = search_track(sp, artist, song)
+            
+            result = {
+                'original_artist': artist,
+                'original_song': song,
+                'track': track,
+                'status': status
+            }
+            
+            if track:
+                found_artist = ', '.join([a['name'] for a in track['artists']])
+                found_song = track['name']
+                print(f"         ✓ Found: {found_artist} - {found_song}")
+                
+                if status == "exact_match":
+                    print(f"         ✓ EXACT MATCH")
+                elif status == "fuzzy_match":
+                    print(f"         ⚠ FUZZY MATCH (artist matched)")
+                else:
+                    print(f"         ? POTENTIAL MATCH (check manually)")
+                    
+                found_tracks.append(track)
+            else:
+                print(f"         ✗ NOT FOUND ({status})")
+                
+            validation_results.append(result)
+            time.sleep(0.1)  # Be nice to Spotify API
+        
+        # Print summary
+        print("\n" + "=" * 80)
+        print("VALIDATION SUMMARY")
+        print("=" * 80)
+        
+        exact_matches = sum(1 for r in validation_results if r['status'] == 'exact_match')
+        fuzzy_matches = sum(1 for r in validation_results if r['status'] == 'fuzzy_match')
+        potential_matches = sum(1 for r in validation_results if r['status'] == 'potential_match')
+        not_found = sum(1 for r in validation_results if r['status'] == 'not_found')
+        
+        print(f"Total songs: {len(setlist)}")
+        print(f"✓ Exact matches: {exact_matches}")
+        print(f"⚠ Fuzzy matches: {fuzzy_matches}")
+        print(f"? Potential matches: {potential_matches}")
+        print(f"✗ Not found: {not_found}")
+        print(f"Success rate: {(len(found_tracks)/len(setlist)*100):.1f}%")
+        
+        if not_found > 0:
+            print(f"\nSongs not found ({not_found}):")
+            for r in validation_results:
+                if r['status'] == 'not_found':
+                    print(f"  - {r['original_artist']}: {r['original_song']}")
+        
+        if args.validate_only:
+            print("\nValidation complete. Use without --validate-only to create playlist.")
+            return
+        
+        # Continue with playlist creation if not just validating
+        tracks.extend(found_tracks)
+        
+        if not found_tracks:
+            print("No tracks found - playlist not created")
+            return
+            
+        # Create the concert playlist
+        concert_pl = sp.user_playlist_create(
+            owner_id, 
+            args.concert_playlist, 
+            public=args.public, 
+            description=f"Setlist playlist with {len(found_tracks)} songs ({(len(found_tracks)/len(setlist)*100):.1f}% match rate)"
+        )
+        
+        # Add tracks to concert playlist
+        track_ids = [t['id'] for t in found_tracks]
+        for chunk in chunked(track_ids, 100):
+            sp.playlist_add_items(concert_pl['id'], chunk)
+        print(f"\nCreated concert playlist '{args.concert_playlist}' with {len(track_ids)} tracks")
+        
+        if args.dry_run:
+            print("Dry run: Concert playlist created but genre processing skipped")
+            return
+            
     else:
-        print("ERROR: Choose one of --liked or --playlist <id/url/uri>", file=sys.stderr)
+        print("ERROR: Choose one of --liked, --playlist <id/url/uri>, or --setlist-file <file>", file=sys.stderr)
         sys.exit(2)
 
     print(f"Collected {len(tracks)} tracks. Getting artist genres (with fallbacks)...")
@@ -288,10 +473,17 @@ def main():
     cache = load_cache(args.cache)
 
     def get_by_id_or_name(aid: str, aname: str) -> List[str]:
-        g = get_artist_genres_by_id(sp, aid)
-        if not g:
-            g = search_artist_genres_by_name(sp, aname)
-        return g
+        # First try by ID
+        genres = get_artist_genres_by_id(sp, aid)
+        if genres:
+            return genres
+        
+        # Fallback to name search if ID failed
+        if aname:
+            genres = search_artist_genres_by_name(sp, aname)
+            return genres
+        
+        return []
 
     def genres_for_artists(artist_pairs: List[Tuple[str, str]]) -> List[str]:
         acc: List[str] = []
@@ -394,9 +586,6 @@ def main():
 
     created = []
     updated = []
-    def chunked(seq, size):
-        for i in range(0, len(seq), size):
-            yield seq[i:i+size]
 
     for bucket, tids in by_bucket.items():
         name = f"{args.prefix}{bucket}"
@@ -452,6 +641,34 @@ def main():
         print(f"  {name}: total bucket tracks={total}, newly added={added}")
     if created:
         print(f"Created playlists: {', '.join(created)}")
+
+    # Print error summary
+    all_errors = []
+    for func in [get_artist_genres_by_id, search_artist_genres_by_name, infer_from_related]:
+        if hasattr(func, '_errors'):
+            all_errors.extend(func._errors)
+    
+    if all_errors:
+        print(f"\nAPI Issues Summary ({len(all_errors)} total):")
+        
+        # Group by error type
+        error_counts = {}
+        for error in all_errors:
+            if "404" in error:
+                error_type = "404 Not Found"
+            elif "not found" in error.lower():
+                error_type = "Artist Not Found"
+            else:
+                error_type = "Other API Error"
+            error_counts[error_type] = error_counts.get(error_type, 0) + 1
+        
+        for error_type, count in error_counts.items():
+            print(f"  {error_type}: {count}")
+        
+        # Show first few examples if requested
+        print("  (This is normal - some artists may be removed, restricted, or podcasts)")
+    else:
+        print("\nNo API issues encountered!")
 
 
 if __name__ == "__main__":
